@@ -98,6 +98,11 @@ nav button[aria-current="page"] svg { stroke-width: 2.4; }
 .chrow { display: flex; align-items: center; gap: 12px; }
 .chrow .nm { flex: 1; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
 .chrow .sub { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
+.when { display: block; color: var(--ink); font-size: 12px; font-weight: 500; margin-top: 2px; }
+.info .when { font-size: 13px; }
+.toast { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.toast button { min-height: 0; padding: 6px 14px; background: #0f0f0f; color: #f1f1f1; flex: none; }
+.toast button:hover { background: #272727; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -118,7 +123,7 @@ nav button[aria-current="page"] svg { stroke-width: 2.4; }
 const KEY = "five-a-day-app-v2";
 const todayStr = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
 const fresh = () => ({
-  cfg: { clientId: "", maxVideos: 5, amMin: 15, pmMin: 45, hour: 12 },
+  cfg: { clientId: "", maxVideos: 5, amMin: 15, pmMin: 45, hour: 12, days: 7 }, seen: {}, skipped: [],
   w: {}, token: null, tokenExp: 0, mode: "demo", channels: [], subs: [], subsAt: 0, chChanged: false,
   day: { date: todayStr(), kept: [], skipped: [], pool: [], poolAt: 0 }
 });
@@ -127,9 +132,16 @@ try { const raw = localStorage.getItem(KEY); if (raw) { const p = JSON.parse(raw
 function rollDay() { if (S.day.date !== todayStr()) S.day = { date: todayStr(), kept: [], skipped: [], pool: [], poolAt: 0 }; }
 rollDay();
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
+(function migrate() {
+  S.seen = S.seen || {}; S.skipped = S.skipped || []; const now = Date.now();
+  (S.day.skipped || []).forEach(id => { S.seen[id] = S.seen[id] || now; });
+  S.day.kept.forEach(v => { S.seen[v.id] = S.seen[v.id] || now; });
+  Object.keys(S.seen).forEach(id => { if (now - S.seen[id] > 45 * 864e5) delete S.seen[id]; });
+  S.skipped = S.skipped.filter(v => now - (v.sk || now) < 30 * 864e5).slice(0, 60);
+})();
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-let tab = "today", busy = "", searchState = { q: "", res: null, err: "" };
+let tab = "today", busy = "", showSkipped = false, searchState = { q: "", groups: null, err: "", loading: false };
 
 /* ---------- demo data ---------- */
 const DEMO = [
@@ -141,7 +153,7 @@ const DEMO = [
   ["What index funds actually own", "Plain Ledger", 11, "Finance", 100], ["Fixing a leaking faucet in ten minutes", "Fix It Ben", 10, "Making", 80],
   ["How sourdough starters stay alive", "Salt & Steam", 15, "Cooking", 12], ["Python tricks I wish I knew sooner", "Null Pointer", 13, "Coding", 260],
   ["Interest rates, explained with a bathtub", "Plain Ledger", 16, "Finance", 100], ["Three days in Lisbon on a budget", "Slow Roads", 25, "Travel", 55]
-].map((v, i) => ({ id: "demo" + i, title: v[0], channel: v[1], cat: v[3], secs: v[2] * 60, hue: v[4], demo: true, channelId: "demo:" + v[1] }));
+].map((v, i) => ({ id: "demo" + i, title: v[0], channel: v[1], cat: v[3], secs: v[2] * 60, hue: v[4], demo: true, channelId: "demo:" + v[1], at: Date.now() - (((i * 5) % 9) * 24 + (i * 7) % 20 + 1) * 3600000 }));
 
 /* ---------- time budget ---------- */
 function allowanceMin() { const h = new Date().getHours() + new Date().getMinutes() / 60; return S.cfg.amMin + (h >= S.cfg.hour ? S.cfg.pmMin : 0); }
@@ -160,13 +172,15 @@ function keysOf(v) {
 }
 const score = v => keysOf(v).reduce((s, [k, m]) => s + (S.w[k] || 0) * m, 0);
 const bump = (v, d) => keysOf(v).forEach(([k]) => { S.w[k] = Math.round(((S.w[k] || 0) + d) * 10) / 10; });
+const winDays = () => S.day.windowDays || S.cfg.days || 7;
+const nextWin = () => [7, 14, 30].find(d => d > winDays());
 const myChannels = () => S.channels.filter(c => c.id.startsWith("demo:") === (S.mode !== "live"));
 function candidates() {
   const set = new Set(myChannels().map(c => c.id));
   let pool = S.mode === "live" ? S.day.pool : DEMO;
   if (S.mode === "live" || set.size) pool = pool.filter(v => !v.channelId || set.has(v.channelId));
-  const gone = new Set([...S.day.kept.map(v => v.id), ...S.day.skipped]);
-  return pool.filter(v => !gone.has(v.id)).sort((a, b) => score(b) - score(a));
+  const oldest = Date.now() - winDays() * 864e5;
+  return pool.filter(v => !S.seen[v.id] && !S.day.kept.some(k => k.id === v.id) && (!v.at || v.at >= oldest)).sort((a, b) => score(b) - score(a));
 }
 function why(v) {
   if ((S.w["ch:" + v.channel] || 0) > 0) return "You've picked " + v.channel + " before.";
@@ -208,41 +222,68 @@ async function hydrate(ids) {
   for (let i = 0; i < ids.length; i += 50) {
     const j = await api("videos", { part: "snippet,contentDetails", id: ids.slice(i, i + 50).join(","), maxResults: 50 });
     (j.items || []).forEach(it => out.push({
-      id: it.id, title: it.snippet.title, channel: it.snippet.channelTitle, channelId: it.snippet.channelId, cat: CATS[it.snippet.categoryId] || "",
+      id: it.id, title: it.snippet.title, channel: it.snippet.channelTitle, channelId: it.snippet.channelId, at: Date.parse(it.snippet.publishedAt) || 0, cat: CATS[it.snippet.categoryId] || "",
       secs: isoSecs(it.contentDetails.duration), live: it.snippet.liveBroadcastContent !== "none"
     }));
   }
   return out;
 }
 const CATS = { 1: "Film", 2: "Autos", 10: "Music", 15: "Pets", 17: "Sports", 19: "Travel", 20: "Gaming", 22: "People", 23: "Comedy", 24: "Entertainment", 25: "News", 26: "How-to", 27: "Education", 28: "Science & tech", 29: "Nonprofit" };
+async function dropShorts(vids) {
+  const sus = vids.filter(v => v.secs <= 180);
+  if (!sus.length) return vids;
+  const shorts = new Set();
+  await Promise.all([...new Set(sus.map(v => v.channelId))].filter(Boolean).map(async ch => {
+    try {
+      const j = await api("playlistItems", { part: "contentDetails", playlistId: "UUSH" + ch.slice(2), maxResults: 50 });
+      (j.items || []).forEach(i => shorts.add(i.contentDetails.videoId));
+    } catch (e) {}
+  }));
+  return vids.filter(v => v.secs > 60 && !shorts.has(v.id));
+}
+async function uploadsOf(ch) {
+  try { return await api("playlistItems", { part: "contentDetails", playlistId: "UULF" + ch.slice(2), maxResults: 25 }); }
+  catch (e) { if (e.status === 404) return api("playlistItems", { part: "contentDetails", playlistId: "UU" + ch.slice(2), maxResults: 25 }); throw e; }
+}
 async function loadPool() {
   const picked = myChannels().map(c => c.id);
   if (!picked.length) { toast("Add a few channels first."); return setTab("channels"); }
   busy = "Finding new uploads…"; render();
   try {
-    const ids = new Set(), cutoff = Date.now() - 21 * 86400000;
+    const ids = new Set(), cutoff = Date.now() - winDays() * 864e5;
     for (let i = 0; i < picked.length; i += 10) {
       busy = "Finding new uploads (" + Math.min(i + 10, picked.length) + "/" + picked.length + ")…"; render();
       await Promise.all(picked.slice(i, i + 10).map(async ch => {
         try {
-          const j = await api("playlistItems", { part: "contentDetails", playlistId: "UU" + ch.slice(2), maxResults: 3 });
+          const j = await uploadsOf(ch);
           (j.items || []).forEach(it => { if (new Date(it.contentDetails.videoPublishedAt || 0).getTime() > cutoff) ids.add(it.contentDetails.videoId); });
         } catch (e) { if (e.status === 401 || e.reason === "quotaExceeded") throw e; }
       }));
     }
-    const vids = (await hydrate([...ids])).filter(v => !v.live && v.secs > 60);
+    const vids = await dropShorts((await hydrate([...ids])).filter(v => !v.live && v.secs > 60));
     S.day.pool = vids; S.day.poolAt = Date.now(); S.chChanged = false; busy = ""; save(); render();
-    if (!vids.length) toast("No new uploads found from your channels.");
+    if (!vids.length) toast("No new uploads from your channels in the last " + winDays() + " days.");
   } catch (e) { busy = ""; render(); toast(e.message); }
 }
-async function runSearch(q) {
-  searchState = { q, res: null, err: "" }; renderSearchResults("Searching…");
+const SWIN = [0, 7, 30, 365, Infinity];
+const SLABEL = ["Last 7 days", "7 to 30 days ago", "30 days to 1 year ago", "More than a year ago"];
+const SNEXT = ["", "up to 30 days", "up to 1 year", "any time"];
+async function runSearch(q) { searchState = { q, groups: [], err: "", loading: true }; await searchGroup(q, 0); }
+async function searchGroup(q, idx) {
+  searchState.loading = true; searchState.err = ""; renderSearchResults();
   try {
-    const j = await api("search", { part: "snippet", q, type: "video", maxResults: 12, safeSearch: "none" });
+    const p = { part: "snippet", q, type: "video", maxResults: 12, safeSearch: "none" };
+    if (SWIN[idx + 1] !== Infinity) p.publishedAfter = new Date(Date.now() - SWIN[idx + 1] * 864e5).toISOString();
+    if (SWIN[idx] > 0) p.publishedBefore = new Date(Date.now() - SWIN[idx] * 864e5).toISOString();
+    const j = await api("search", p);
     const ids = (j.items || []).map(i => i.id.videoId).filter(Boolean);
-    searchState.res = ids.length ? (await hydrate(ids)).filter(v => !v.live) : [];
-  } catch (e) { searchState.err = e.message; }
-  renderSearchResults();
+    const have = new Set(searchState.groups.flatMap(g => g.vids.map(v => v.id)));
+    let vids = ids.length ? (await hydrate(ids)).filter(v => !v.live && v.secs > 60 && !have.has(v.id)) : [];
+    vids = await dropShorts(vids);
+    if (searchState.q !== q) return;
+    searchState.groups.push({ idx, vids });
+  } catch (e) { if (searchState.q !== q) return; searchState.err = e.reason === "quotaExceeded" ? "Today's YouTube search quota is used up." : e.message; }
+  searchState.loading = false; renderSearchResults();
 }
 
 /* ---------- actions ---------- */
@@ -250,13 +291,24 @@ function fits(v) { return !countFull() && v.secs <= remainingSecs(); }
 function keep(v) {
   if (!fits(v)) return toast(countFull() ? "You've reached today's video limit." : "That one is longer than your time left.");
   if (S.day.kept.some(k => k.id === v.id)) return;
-  S.day.kept.push(v); S.day.skipped = S.day.skipped.filter(x => x !== v.id); bump(v, 1); save(); render();
+  S.day.kept.push(v); S.seen[v.id] = Date.now(); S.skipped = S.skipped.filter(x => x.id !== v.id); bump(v, 1); save(); render();
 }
-function skip(v) { S.day.skipped.push(v.id); bump(v, -1); save(); render(); }
-function unkeep(id) { const v = S.day.kept.find(k => k.id === id); if (!v) return; S.day.kept = S.day.kept.filter(k => k.id !== id); bump(v, -1); save(); render(); }
-const findVideo = id => S.day.kept.find(v => v.id === id) || (S.day.pool || []).find(v => v.id === id) || (searchState.res || []).find(v => v.id === id) || DEMO.find(v => v.id === id);
-let toastTimer;
-function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 3800); }
+function skip(v) {
+  S.seen[v.id] = Date.now(); S.skipped.unshift(Object.assign({}, v, { sk: Date.now() })); S.skipped = S.skipped.slice(0, 60); bump(v, -1); save(); render();
+  toast("Skipped.", "Undo", () => unskip(v.id));
+}
+function unskip(id) {
+  const v = S.skipped.find(x => x.id === id); if (!v) return;
+  S.skipped = S.skipped.filter(x => x.id !== id); delete S.seen[id]; bump(v, 1); save(); render();
+}
+function unkeep(id) { const v = S.day.kept.find(k => k.id === id); if (!v) return; S.day.kept = S.day.kept.filter(k => k.id !== id); delete S.seen[id]; bump(v, -1); save(); render(); }
+const findVideo = id => S.day.kept.find(v => v.id === id) || (S.day.pool || []).find(v => v.id === id) || S.skipped.find(v => v.id === id) || ((searchState.groups || []).flatMap(g => g.vids).find(v => v.id === id)) || DEMO.find(v => v.id === id);
+let toastTimer, toastFn = null;
+function toast(msg, label, fn) {
+  const t = $("toast"); toastFn = fn || null;
+  t.innerHTML = "<span>" + esc(msg) + "</span>" + (label ? '<button type="button" data-act="toastact">' + esc(label) + "</button>" : "");
+  t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, label ? 7000 : 3800);
+}
 
 /* ---------- channels ---------- */
 const MAXCH = 60;
@@ -376,7 +428,7 @@ function openPlayer(id) {
   $("sheet").innerHTML = '<div class="top"><h2 class="sec" style="margin:0">Now playing</h2><button class="small" data-act="close" type="button">Close</button></div>' +
     (v.demo ? '<div class="thumb" style="--h:' + v.hue + '"><span class="glyph">' + esc(v.channel[0]) + '</span></div><p class="note">Demo video. Connect YouTube in Settings to play real videos here.</p>'
       : '<div class="player"><iframe src="https://www.youtube.com/embed/' + encodeURIComponent(v.id) + '?playsinline=1&rel=0&autoplay=1" title="' + esc(v.title) + '" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div>') +
-    '<div><h2 class="vtitle">' + esc(v.title) + '</h2><div class="chan">' + esc(v.channel) + " · " + fmt(v.secs) + '</div></div>' +
+    '<div><h2 class="vtitle">' + esc(v.title) + '</h2><div class="chan">' + esc(v.channel) + " · " + fmt(v.secs) + '</div>' + whenHtml(v) + '</div>' +
     '<div class="actions" style="grid-template-columns:1fr 1fr">' +
     (v.demo ? "" : '<button data-act="like" data-id="' + esc(v.id) + '" type="button">Like on YouTube</button>') +
     '<a class="btn" href="' + watch + '" target="_blank" rel="noopener">Open on YouTube</a></div>' +
@@ -386,6 +438,24 @@ function openPlayer(id) {
 function closePlayer() { $("sheet").innerHTML = ""; $("sheet").hidden = true; }
 
 /* ---------- views ---------- */
+function ago(ts) {
+  const m = Math.max(0, Math.floor((Date.now() - ts) / 60000));
+  if (m < 2) return "just now"; if (m < 60) return m + " minutes ago";
+  const h = Math.floor(m / 60); if (h < 24) return h === 1 ? "1 hour ago" : h + " hours ago";
+  const d = Math.floor(h / 24); if (d < 14) return d === 1 ? "1 day ago" : d + " days ago";
+  if (d < 60) return Math.floor(d / 7) + " weeks ago";
+  if (d < 365) return Math.floor(d / 30) + " months ago";
+  const y = Math.floor(d / 365); return y === 1 ? "1 year ago" : y + " years ago";
+}
+function dateShort(ts) { return new Date(ts).toLocaleDateString(undefined, { day: "numeric", month: "short", year: Date.now() - ts > 300 * 864e5 ? "numeric" : undefined }); }
+function whenHtml(v) { return v.at ? '<span class="when">Uploaded ' + ago(v.at) + " · " + dateShort(v.at) + "</span>" : ""; }
+function windowNote() {
+  const n = nextWin();
+  return '<div class="meta" style="align-items:center"><span>Showing uploads from the last ' + winDays() + ' days</span>' + (n ? '<button class="small" data-act="older" type="button">Include older (' + n + ' days)</button>' : "") + "</div>";
+}
+function skippedRow(v) {
+  return '<li class="row">' + thumbHtml(v) + '<div style="min-width:0"><div class="t">' + esc(v.title) + '</div><div class="c">' + esc(v.channel) + " · " + fmt(v.secs) + '</div>' + whenHtml(v) + '<div class="btns"><button class="small primary" data-act="unskip" data-id="' + esc(v.id) + '" type="button">Bring back</button></div></div></li>';
+}
 function thumbHtml(v) {
   return '<div class="thumb" style="--h:' + (v.hue || (v.channel.length * 37) % 360) + '"><span class="glyph">' + esc(v.channel[0]) + '</span>' +
     (v.demo ? "" : '<img src="https://i.ytimg.com/vi/' + encodeURIComponent(v.id) + '/mqdefault.jpg" alt="" loading="lazy" onerror="this.remove()">') +
@@ -415,19 +485,21 @@ function renderToday() {
       h += '<div class="card done"><h2>Time\'s used up for now.</h2><p>' + (am && S.cfg.pmMin ? S.cfg.pmMin + " more minutes unlock at " + hourLabel(S.cfg.hour) + "." : "See you tomorrow.") + "</p></div>";
     } else if (!v) h += '<div class="card done"><h2>Nothing that fits.</h2><p>' + (hidden ? hidden + " videos are longer than your time left." : "You've seen every candidate for today.") + '</p>' + (live ? '<button data-act="load" type="button">Refresh list</button>' : "") + "</div>";
     else {
-      h += '<article class="card">' + thumbHtml(v) + '<div class="info"><h2 class="vtitle">' + esc(v.title) + '</h2><div class="chan">' + esc(v.channel) + (v.cat ? " · " + esc(v.cat) : "") + '</div><div class="why">' + esc(why(v)) + "</div></div></article>" +
+      h += '<article class="card">' + thumbHtml(v) + '<div class="info"><h2 class="vtitle">' + esc(v.title) + '</h2><div class="chan">' + esc(v.channel) + (v.cat ? " · " + esc(v.cat) : "") + '</div>' + whenHtml(v) + '<div class="why">' + esc(why(v)) + "</div></div></article>" +
         '<div class="actions"><button class="skip" data-act="skip" data-id="' + esc(v.id) + '" type="button">Not for me</button><button class="primary" data-act="keep" data-id="' + esc(v.id) + '" type="button">Watch today</button></div>';
       if (hidden) h += '<p class="note">' + hidden + " longer video" + (hidden > 1 ? "s are" : " is") + " hidden until you have more time.</p>";
     }
   }
+  if (!busy && (!live || S.day.poolAt)) h += windowNote();
   h += '<section><h2 class="sec">Today\'s picks</h2><ul class="list">' + (S.day.kept.length ? S.day.kept.map(rowHtml).join("") : '<li class="empty">Nothing chosen yet.</li>') + "</ul></section>";
+  if (S.skipped.length) h += '<section><button class="small" data-act="toggleskipped" type="button">' + (showSkipped ? "Hide skipped" : "Skipped videos (" + S.skipped.length + ")") + "</button>" + (showSkipped ? '<ul class="list" style="margin-top:12px">' + S.skipped.slice(0, 20).map(skippedRow).join("") + "</ul>" : "") + "</section>";
   const ws = Object.entries(S.w).filter(([k, n]) => n !== 0 && (k.startsWith("ch:") || k.startsWith("cat:"))).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 8);
   h += '<section><h2 class="sec">What it has learned</h2><div class="taste">' + (ws.length ? ws.map(([k, n]) => '<span class="chip ' + (n > 0 ? "up" : "down") + '">' + esc(k.slice(k.indexOf(":") + 1)) + " " + (n > 0 ? "+" : "") + Math.round(n) + "</span>").join("") : '<span class="empty" style="width:100%">Pick and skip a few videos and your preferences show up here.</span>') + "</div></section>";
   if (live && S.day.poolAt && !busy) h += (S.chChanged ? '<p class="note">Your channel list changed. Refresh to include new uploads.</p>' : "") + '<button class="small' + (S.chChanged ? " primary" : "") + '" data-act="load" type="button" style="align-self:flex-start">Refresh candidates</button>';
   $("view").innerHTML = h;
 }
 function rowHtml(v) {
-  return '<li class="row">' + thumbHtml(v) + '<div style="min-width:0"><div class="t">' + esc(v.title) + '</div><div class="c">' + esc(v.channel) + " · " + fmt(v.secs) + '</div><div class="btns"><button class="small primary" data-act="play" data-id="' + esc(v.id) + '" type="button">Play</button><button class="small" data-act="unkeep" data-id="' + esc(v.id) + '" type="button">Remove</button></div></div></li>';
+  return '<li class="row">' + thumbHtml(v) + '<div style="min-width:0"><div class="t">' + esc(v.title) + '</div><div class="c">' + esc(v.channel) + " · " + fmt(v.secs) + '</div>' + whenHtml(v) + '<div class="btns"><button class="small primary" data-act="play" data-id="' + esc(v.id) + '" type="button">Play</button><button class="small" data-act="unkeep" data-id="' + esc(v.id) + '" type="button">Remove</button></div></div></li>';
 }
 function renderSearch() {
   $("view").innerHTML = '<div class="top"><h1>Search</h1></div>' +
@@ -435,18 +507,22 @@ function renderSearch() {
       : '<div class="panel"><strong>Search needs a YouTube connection.</strong><span class="note">Connect your account in Settings to search real videos.</span><button class="primary" data-act="goto-settings" type="button">Set up YouTube</button></div>');
   if (S.mode === "live") renderSearchResults();
 }
-function renderSearchResults(msg) {
+function searchRow(v) {
+  const added = S.day.kept.some(k => k.id === v.id), ok = fits(v);
+  return '<li class="row">' + thumbHtml(v) + '<div style="min-width:0"><div class="t">' + esc(v.title) + '</div><div class="c">' + esc(v.channel) + " · " + fmt(v.secs) + '</div>' + whenHtml(v) + '<div class="btns">' +
+    (added ? '<button class="small" disabled type="button">Added</button>' : '<button class="small primary" data-act="keep" data-id="' + esc(v.id) + '" type="button"' + (ok ? "" : " disabled") + ">Add to today</button>") +
+    '<button class="small" data-act="play" data-id="' + esc(v.id) + '" type="button">Preview</button></div>' + (!ok && !added ? '<div class="c" style="margin-top:6px">Too long for the time left.</div>' : "") + "</div></li>";
+}
+function renderSearchResults() {
   const el = $("sres"); if (!el) return;
-  if (msg) { el.innerHTML = '<p class="note">' + esc(msg) + "</p>"; return; }
-  if (searchState.err) { el.innerHTML = '<div class="empty">' + esc(searchState.err) + "</div>"; return; }
-  if (!searchState.res) { el.innerHTML = '<p class="note">Anything you add counts toward today\'s time and video limit like any other pick.</p>'; return; }
-  if (!searchState.res.length) { el.innerHTML = '<div class="empty">No videos found.</div>'; return; }
-  el.innerHTML = '<ul class="list">' + searchState.res.map(v => {
-    const added = S.day.kept.some(k => k.id === v.id), ok = fits(v);
-    return '<li class="row">' + thumbHtml(v) + '<div style="min-width:0"><div class="t">' + esc(v.title) + '</div><div class="c">' + esc(v.channel) + " · " + fmt(v.secs) + '</div><div class="btns">' +
-      (added ? '<button class="small" disabled type="button">Added</button>' : '<button class="small primary" data-act="keep" data-id="' + esc(v.id) + '" type="button"' + (ok ? "" : " disabled") + ">Add to today</button>") +
-      '<button class="small" data-act="play" data-id="' + esc(v.id) + '" type="button">Preview</button></div>' + (!ok && !added ? '<div class="c" style="margin-top:6px">Too long for the time left.</div>' : "") + "</div></li>";
-  }).join("") + "</ul>";
+  const st = searchState;
+  if (!st.groups) { el.innerHTML = '<p class="note">Results cover the last 7 days. Use "Search earlier" to look further back. Anything you add counts toward today\'s time and video limit.</p>'; return; }
+  let h = '<div style="display:flex;flex-direction:column;gap:18px">';
+  st.groups.forEach(g => { h += '<section><h2 class="sec">' + SLABEL[g.idx] + "</h2>" + (g.vids.length ? '<ul class="list">' + g.vids.map(searchRow).join("") + "</ul>" : '<div class="empty">No videos found for this period.</div>') + "</section>"; });
+  if (st.err) h += '<div class="empty">' + esc(st.err) + "</div>";
+  if (st.loading) h += '<p class="note">Searching…</p>';
+  else if (st.groups.length <= 3) h += '<button data-act="searchmore" type="button">Search earlier (' + SNEXT[st.groups.length] + ")</button>";
+  el.innerHTML = h + "</div>";
 }
 function renderSettings() {
   const c = S.cfg, live = S.mode === "live";
@@ -460,7 +536,8 @@ function renderSettings() {
     '<label class="f">Videos per day (0 = no cap)<input type="number" inputmode="numeric" id="mv" min="0" max="20" value="' + c.maxVideos + '"></label>' +
     '<label class="f">Switch hour (0–23)<input type="number" inputmode="numeric" id="hr" min="0" max="23" value="' + c.hour + '"></label>' +
     '<label class="f">Minutes before the switch<input type="number" inputmode="numeric" id="am" min="0" max="600" value="' + c.amMin + '"></label>' +
-    '<label class="f">Extra minutes after<input type="number" inputmode="numeric" id="pm" min="0" max="600" value="' + c.pmMin + '"></label></div>' +
+    '<label class="f">Extra minutes after<input type="number" inputmode="numeric" id="pm" min="0" max="600" value="' + c.pmMin + '"></label>' +
+    '<label class="f" style="grid-column:1/-1">Show uploads from the last (days)<input type="number" inputmode="numeric" id="dy" min="1" max="30" value="' + c.days + '"></label></div>' +
     '<button class="primary" data-act="savecfg" type="button">Save limits</button></div>' +
     '<div class="panel"><h2 class="sec" style="margin:0">Today</h2><button data-act="resetday" type="button">Start today over</button><button data-act="resettaste" type="button">Forget what it learned</button></div>' +
     '<p class="note">Likes and skips shape the ranking here. YouTube does not let apps send "not interested", so your real recommendations are not affected.</p>';
@@ -482,6 +559,11 @@ document.addEventListener("click", async e => {
   else if (act === "load") loadPool();
   else if (act === "goto-settings") setTab("settings");
   else if (act === "goto-channels") setTab("channels");
+  else if (act === "older") { S.day.windowDays = nextWin(); save(); if (S.mode === "live") loadPool(); else render(); }
+  else if (act === "unskip") unskip(id);
+  else if (act === "toggleskipped") { showSkipped = !showSkipped; render(); }
+  else if (act === "searchmore") searchGroup(searchState.q, searchState.groups.length);
+  else if (act === "toastact") { const f = toastFn; toastFn = null; $("toast").hidden = true; if (f) f(); }
   else if (act === "addch") addChannel(id);
   else if (act === "rmch") removeChannel(id);
   else if (act === "browse") { showSubs = !showSubs; b.textContent = showSubs ? "Hide my subscriptions" : "Browse my YouTube subscriptions"; updateSugg(); }
@@ -492,9 +574,9 @@ document.addEventListener("click", async e => {
   } else if (act === "disconnect") { S.mode = "demo"; S.token = null; S.tokenExp = 0; save(); render(); }
   else if (act === "savecfg") {
     const n = (id, lo, hi, d) => { const x = parseInt($(id).value, 10); return isNaN(x) ? d : Math.min(hi, Math.max(lo, x)); };
-    S.cfg.clientId = $("cid").value.trim(); S.cfg.maxVideos = n("mv", 0, 20, 5); S.cfg.hour = n("hr", 0, 23, 12); S.cfg.amMin = n("am", 0, 600, 15); S.cfg.pmMin = n("pm", 0, 600, 45);
+    S.cfg.clientId = $("cid").value.trim(); S.cfg.maxVideos = n("mv", 0, 20, 5); S.cfg.hour = n("hr", 0, 23, 12); S.cfg.amMin = n("am", 0, 600, 15); S.cfg.pmMin = n("pm", 0, 600, 45); S.cfg.days = n("dy", 1, 30, 7); S.day.windowDays = 0;
     save(); toast("Saved."); render();
-  } else if (act === "resetday") { S.day.kept = []; S.day.skipped = []; save(); toast("Today reset."); render(); }
+  } else if (act === "resetday") { S.day.kept.forEach(v => { delete S.seen[v.id]; }); S.day.kept = []; save(); toast("Today reset."); render(); }
   else if (act === "resettaste") { S.w = {}; save(); toast("Preferences cleared."); render(); }
 });
 document.addEventListener("input", e => {
