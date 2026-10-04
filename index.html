@@ -123,20 +123,23 @@ nav button[aria-current="page"] svg { stroke-width: 2.4; }
 const KEY = "five-a-day-app-v2";
 const todayStr = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
 const fresh = () => ({
-  cfg: { clientId: "", maxVideos: 5, amMin: 15, pmMin: 45, hour: 12, days: 7 }, seen: {}, skipped: [],
+  cfg: { clientId: "", maxVideos: 5, amMin: 15, pmMin: 45, hour: 12, days: 7, shortlist: 20 }, hist: {}, skipped: [],
   w: {}, token: null, tokenExp: 0, mode: "demo", channels: [], subs: [], subsAt: 0, chChanged: false,
-  day: { date: todayStr(), kept: [], skipped: [], pool: [], poolAt: 0 }
+  day: { date: todayStr(), kept: [], skipped: [], pool: [], poolAt: 0, short: [] }
 });
 let S = fresh();
 try { const raw = localStorage.getItem(KEY); if (raw) { const p = JSON.parse(raw); S = Object.assign(fresh(), p, { cfg: Object.assign(fresh().cfg, p.cfg || {}) }); } } catch (e) {}
-function rollDay() { if (S.day.date !== todayStr()) S.day = { date: todayStr(), kept: [], skipped: [], pool: [], poolAt: 0 }; }
+function rollDay() { if (S.day.date !== todayStr()) S.day = { date: todayStr(), kept: [], skipped: [], pool: [], poolAt: 0, short: [] }; }
 rollDay();
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
 (function migrate() {
-  S.seen = S.seen || {}; S.skipped = S.skipped || []; const now = Date.now();
-  (S.day.skipped || []).forEach(id => { S.seen[id] = S.seen[id] || now; });
-  S.day.kept.forEach(v => { S.seen[v.id] = S.seen[v.id] || now; });
-  Object.keys(S.seen).forEach(id => { if (now - S.seen[id] > 45 * 864e5) delete S.seen[id]; });
+  S.skipped = S.skipped || []; S.hist = S.hist || {}; S.day.short = S.day.short || []; const now = Date.now();
+  const fill = (id, rec) => { const h = S.hist[id]; if (!h || h.st === "seen") S.hist[id] = rec; };
+  Object.keys(S.seen || {}).forEach(id => fill(id, { t: "", c: "", ts: S.seen[id], st: "seen" })); delete S.seen;
+  (S.day.skipped || []).forEach(id => fill(id, { t: "", c: "", ts: now, st: "seen" }));
+  S.day.kept.forEach(v => fill(v.id, { t: v.title, c: v.channel, ts: now, st: "picked" }));
+  S.skipped.forEach(v => fill(v.id, { t: v.title, c: v.channel, ts: v.sk || now, st: "skipped" }));
+  const ks = Object.keys(S.hist); if (ks.length > 5000) ks.sort((a, b) => S.hist[a].ts - S.hist[b].ts).slice(0, ks.length - 5000).forEach(id => delete S.hist[id]);
   S.skipped = S.skipped.filter(v => now - (v.sk || now) < 30 * 864e5).slice(0, 60);
 })();
 const $ = id => document.getElementById(id);
@@ -164,28 +167,62 @@ const fmt = secs => { const m = Math.round(secs / 60); return m < 1 ? "<1 min" :
 const clock = secs => { const h = Math.floor(secs / 3600), m = Math.floor(secs % 3600 / 60), s = secs % 60; return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0"); };
 const hourLabel = h => (h % 12 === 0 ? 12 : h % 12) + ":00 " + (h >= 12 ? "pm" : "am");
 
-/* ---------- taste model ---------- */
-const STOP = new Set("about after again being could every first from have into just more most only other over really should some still than that their them then there these they this those very what when where which while with would your video videos make made".split(" "));
-function keysOf(v) {
-  const words = (String(v.title).toLowerCase().match(/[a-z]{5,}/g) || []).filter(w => !STOP.has(w)).slice(0, 4);
-  return [["ch:" + v.channel, 1.5], v.cat ? ["cat:" + v.cat, 1] : null, ...words.map(w => ["w:" + w, 0.5])].filter(Boolean);
-}
-const score = v => keysOf(v).reduce((s, [k, m]) => s + (S.w[k] || 0) * m, 0);
-const bump = (v, d) => keysOf(v).forEach(([k]) => { S.w[k] = Math.round(((S.w[k] || 0) + d) * 10) / 10; });
+/* ---------- the day's shortlist ---------- */
+const shortMax = () => S.cfg.shortlist || 20;
 const winDays = () => S.day.windowDays || S.cfg.days || 7;
 const nextWin = () => [7, 14, 30].find(d => d > winDays());
 const myChannels = () => S.channels.filter(c => c.id.startsWith("demo:") === (S.mode !== "live"));
-function candidates() {
+function eligible() {
   const set = new Set(myChannels().map(c => c.id));
   let pool = S.mode === "live" ? S.day.pool : DEMO;
   if (S.mode === "live" || set.size) pool = pool.filter(v => !v.channelId || set.has(v.channelId));
-  const oldest = Date.now() - winDays() * 864e5;
-  return pool.filter(v => !S.seen[v.id] && !S.day.kept.some(k => k.id === v.id) && (!v.at || v.at >= oldest)).sort((a, b) => score(b) - score(a));
+  const oldest = Date.now() - winDays() * 864e5, dayMax = (S.cfg.amMin + S.cfg.pmMin) * 60;
+  const wk = watchedKeys();
+  return pool.filter(v => !S.hist[v.id] && !isWatched(v, wk) && !S.day.kept.some(k => k.id === v.id) && (!v.at || v.at >= oldest) && v.secs <= dayMax);
 }
-function why(v) {
-  if ((S.w["ch:" + v.channel] || 0) > 0) return "You've picked " + v.channel + " before.";
-  if (v.cat && (S.w["cat:" + v.cat] || 0) > 0) return "You keep choosing " + v.cat.toLowerCase() + ".";
-  return "New from channels you follow.";
+/* Newest day first. Inside a day, takes each channel's newest video first, then each channel's second newest. */
+function mix(list, n) {
+  const days = new Map();
+  list.slice().sort((a, b) => (b.at || 0) - (a.at || 0)).forEach(v => { const k = v.at ? new Date(v.at).toDateString() : "old"; if (!days.has(k)) days.set(k, []); days.get(k).push(v); });
+  const out = [];
+  for (const vids of days.values()) {
+    if (out.length >= n) break;
+    const by = new Map();
+    vids.forEach(v => { const k = v.channelId || v.channel; if (!by.has(k)) by.set(k, []); by.get(k).push(v); });
+    const cols = [...by.values()];
+    for (let r = 0; out.length < n; r++) {
+      let any = false;
+      for (const c of cols) if (c[r]) { out.push(c[r]); any = true; if (out.length >= n) break; }
+      if (!any) break;
+    }
+  }
+  return out;
+}
+const WATCHED = new Set(["picked", "played"]);
+function watchedKeys() { const k = new Set(); Object.values(S.hist).forEach(h => { if (WATCHED.has(h.st) && h.t) k.add(norm(h.c) + "|" + norm(h.t)); }); return k; }
+function isWatched(v, wk) { const h = S.hist[v.id]; return !!(h && WATCHED.has(h.st)) || (wk || watchedKeys()).has(norm(v.channel) + "|" + norm(v.title)); }
+function trimShort() {
+  const done = S.day.short.filter(v => S.hist[v.id]), open = S.day.short.filter(v => !S.hist[v.id]);
+  S.day.short = done.concat(open.slice(0, Math.max(0, shortMax() - done.length)));
+}
+const record = (v, st) => { S.hist[v.id] = { t: v.title, c: v.channel, ts: Date.now(), st }; };
+function markPlayed(id) { const h = S.hist[id]; if (h && h.st === "picked") { h.st = "played"; h.ts = Date.now(); save(); } }
+function exportHist() {
+  const q = x => '"' + String(x == null ? "" : x).replace(/"/g, '""') + '"';
+  const rows = Object.entries(S.hist).sort((a, b) => b[1].ts - a[1].ts).map(([id, h]) => [new Date(h.ts).toISOString().slice(0, 10), h.st, h.t, h.c, "https://www.youtube.com/watch?v=" + id].map(q).join(","));
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(["date,status,title,channel,link\n" + rows.join("\n")], { type: "text/csv" })); a.download = "five-a-day-history.csv";
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+function buildShort() {
+  const need = shortMax() - S.day.short.length; if (need <= 0) return;
+  const have = new Set(S.day.short.map(v => v.id));
+  const add = mix(eligible().filter(v => !have.has(v.id)), need);
+  if (add.length) { S.day.short.push(...add); save(); }
+}
+function candidates() {
+  const set = new Set(myChannels().map(c => c.id));
+  const wk = watchedKeys();
+  return S.day.short.filter(v => !S.hist[v.id] && !isWatched(v, wk) && !S.day.kept.some(k => k.id === v.id) && ((S.mode !== "live" && !set.size) || !v.channelId || set.has(v.channelId))).sort((a, b) => (b.at || 0) - (a.at || 0));
 }
 
 /* ---------- YouTube API ---------- */
@@ -261,7 +298,7 @@ async function loadPool() {
       }));
     }
     const vids = await dropShorts((await hydrate([...ids])).filter(v => !v.live && v.secs > 60));
-    S.day.pool = vids; S.day.poolAt = Date.now(); S.chChanged = false; busy = ""; save(); render();
+    S.day.pool = vids; S.day.poolAt = Date.now(); S.chChanged = false; busy = ""; buildShort(); save(); render();
     if (!vids.length) toast("No new uploads from your channels in the last " + winDays() + " days.");
   } catch (e) { busy = ""; render(); toast(e.message); }
 }
@@ -277,8 +314,8 @@ async function searchGroup(q, idx) {
     if (SWIN[idx] > 0) p.publishedBefore = new Date(Date.now() - SWIN[idx] * 864e5).toISOString();
     const j = await api("search", p);
     const ids = (j.items || []).map(i => i.id.videoId).filter(Boolean);
-    const have = new Set(searchState.groups.flatMap(g => g.vids.map(v => v.id)));
-    let vids = ids.length ? (await hydrate(ids)).filter(v => !v.live && v.secs > 60 && !have.has(v.id)) : [];
+    const have = new Set(searchState.groups.flatMap(g => g.vids.map(v => v.id))), wk = watchedKeys();
+    let vids = ids.length ? (await hydrate(ids)).filter(v => !v.live && v.secs > 60 && !have.has(v.id) && !isWatched(v, wk)) : [];
     vids = await dropShorts(vids);
     if (searchState.q !== q) return;
     searchState.groups.push({ idx, vids });
@@ -291,18 +328,18 @@ function fits(v) { return !countFull() && v.secs <= remainingSecs(); }
 function keep(v) {
   if (!fits(v)) return toast(countFull() ? "You've reached today's video limit." : "That one is longer than your time left.");
   if (S.day.kept.some(k => k.id === v.id)) return;
-  S.day.kept.push(v); S.seen[v.id] = Date.now(); S.skipped = S.skipped.filter(x => x.id !== v.id); bump(v, 1); save(); render();
+  S.day.kept.push(v); record(v, "picked"); S.skipped = S.skipped.filter(x => x.id !== v.id); save(); render();
 }
 function skip(v) {
-  S.seen[v.id] = Date.now(); S.skipped.unshift(Object.assign({}, v, { sk: Date.now() })); S.skipped = S.skipped.slice(0, 60); bump(v, -1); save(); render();
+  record(v, "skipped"); S.skipped.unshift(Object.assign({}, v, { sk: Date.now() })); S.skipped = S.skipped.slice(0, 60); save(); render();
   toast("Skipped.", "Undo", () => unskip(v.id));
 }
 function unskip(id) {
   const v = S.skipped.find(x => x.id === id); if (!v) return;
-  S.skipped = S.skipped.filter(x => x.id !== id); delete S.seen[id]; bump(v, 1); save(); render();
+  S.skipped = S.skipped.filter(x => x.id !== id); delete S.hist[id]; if (!S.day.short.some(x => x.id === id)) S.day.short.push(v); save(); render();
 }
-function unkeep(id) { const v = S.day.kept.find(k => k.id === id); if (!v) return; S.day.kept = S.day.kept.filter(k => k.id !== id); delete S.seen[id]; bump(v, -1); save(); render(); }
-const findVideo = id => S.day.kept.find(v => v.id === id) || (S.day.pool || []).find(v => v.id === id) || S.skipped.find(v => v.id === id) || ((searchState.groups || []).flatMap(g => g.vids).find(v => v.id === id)) || DEMO.find(v => v.id === id);
+function unkeep(id) { const v = S.day.kept.find(k => k.id === id); if (!v) return; S.day.kept = S.day.kept.filter(k => k.id !== id); delete S.hist[id]; save(); render(); }
+const findVideo = id => S.day.kept.find(v => v.id === id) || (S.day.pool || []).find(v => v.id === id) || S.day.short.find(v => v.id === id) || S.skipped.find(v => v.id === id) || ((searchState.groups || []).flatMap(g => g.vids).find(v => v.id === id)) || DEMO.find(v => v.id === id);
 let toastTimer, toastFn = null;
 function toast(msg, label, fn) {
   const t = $("toast"); toastFn = fn || null;
@@ -450,8 +487,8 @@ function ago(ts) {
 function dateShort(ts) { return new Date(ts).toLocaleDateString(undefined, { day: "numeric", month: "short", year: Date.now() - ts > 300 * 864e5 ? "numeric" : undefined }); }
 function whenHtml(v) { return v.at ? '<span class="when">Uploaded ' + ago(v.at) + " · " + dateShort(v.at) + "</span>" : ""; }
 function windowNote() {
-  const n = nextWin();
-  return '<div class="meta" style="align-items:center"><span>Showing uploads from the last ' + winDays() + ' days</span>' + (n ? '<button class="small" data-act="older" type="button">Include older (' + n + ' days)</button>' : "") + "</div>";
+  const n = nextWin(), full = S.day.short.length >= shortMax(), left = candidates().length;
+  return '<div class="meta" style="align-items:center"><span>' + left + " of " + S.day.short.length + " left · last " + winDays() + ' days</span>' + (n && !full ? '<button class="small" data-act="older" type="button">Include older (' + n + ' days)</button>' : "") + "</div>";
 }
 function skippedRow(v) {
   return '<li class="row">' + thumbHtml(v) + '<div style="min-width:0"><div class="t">' + esc(v.title) + '</div><div class="c">' + esc(v.channel) + " · " + fmt(v.secs) + '</div>' + whenHtml(v) + '<div class="btns"><button class="small primary" data-act="unskip" data-id="' + esc(v.id) + '" type="button">Bring back</button></div></div></li>';
@@ -470,6 +507,7 @@ function meters() {
 }
 function renderToday() {
   const d = new Date();
+  if (!busy && S.day.short.length < shortMax() && (S.mode !== "live" || S.day.poolAt)) buildShort();
   const live = S.mode === "live";
   let h = '<div class="top"><h1>Five a Day</h1><span class="date">' + d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }) + "</span></div>" + meters();
   if (!live) h += '<div class="panel"><strong>You are looking at demo videos.</strong><span class="note">Connect your YouTube account to see new uploads from the channels you choose.</span><button class="primary" data-act="goto-settings" type="button">Set up YouTube</button></div>';
@@ -483,9 +521,9 @@ function renderToday() {
     else if (remainingSecs() < 60) {
       const am = new Date().getHours() < S.cfg.hour;
       h += '<div class="card done"><h2>Time\'s used up for now.</h2><p>' + (am && S.cfg.pmMin ? S.cfg.pmMin + " more minutes unlock at " + hourLabel(S.cfg.hour) + "." : "See you tomorrow.") + "</p></div>";
-    } else if (!v) h += '<div class="card done"><h2>Nothing that fits.</h2><p>' + (hidden ? hidden + " videos are longer than your time left." : "You've seen every candidate for today.") + '</p>' + (live ? '<button data-act="load" type="button">Refresh list</button>' : "") + "</div>";
+    } else if (!v) h += '<div class="card done"><h2>' + (hidden ? "Nothing that fits." : "That\'s the whole list.") + '</h2><p>' + (hidden ? hidden + " videos are longer than your time left." : "You\'ve been through today\'s " + S.day.short.length + ".") + '</p>' + (live ? '<button data-act="load" type="button">Refresh list</button>' : "") + "</div>";
     else {
-      h += '<article class="card">' + thumbHtml(v) + '<div class="info"><h2 class="vtitle">' + esc(v.title) + '</h2><div class="chan">' + esc(v.channel) + (v.cat ? " · " + esc(v.cat) : "") + '</div>' + whenHtml(v) + '<div class="why">' + esc(why(v)) + "</div></div></article>" +
+      h += '<article class="card">' + thumbHtml(v) + '<div class="info"><h2 class="vtitle">' + esc(v.title) + '</h2><div class="chan">' + esc(v.channel) + (v.cat ? " · " + esc(v.cat) : "") + '</div>' + whenHtml(v) + '</div></article>' +
         '<div class="actions"><button class="skip" data-act="skip" data-id="' + esc(v.id) + '" type="button">Not for me</button><button class="primary" data-act="keep" data-id="' + esc(v.id) + '" type="button">Watch today</button></div>';
       if (hidden) h += '<p class="note">' + hidden + " longer video" + (hidden > 1 ? "s are" : " is") + " hidden until you have more time.</p>";
     }
@@ -493,9 +531,10 @@ function renderToday() {
   if (!busy && (!live || S.day.poolAt)) h += windowNote();
   h += '<section><h2 class="sec">Today\'s picks</h2><ul class="list">' + (S.day.kept.length ? S.day.kept.map(rowHtml).join("") : '<li class="empty">Nothing chosen yet.</li>') + "</ul></section>";
   if (S.skipped.length) h += '<section><button class="small" data-act="toggleskipped" type="button">' + (showSkipped ? "Hide skipped" : "Skipped videos (" + S.skipped.length + ")") + "</button>" + (showSkipped ? '<ul class="list" style="margin-top:12px">' + S.skipped.slice(0, 20).map(skippedRow).join("") + "</ul>" : "") + "</section>";
-  const ws = Object.entries(S.w).filter(([k, n]) => n !== 0 && (k.startsWith("ch:") || k.startsWith("cat:"))).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 8);
-  h += '<section><h2 class="sec">What it has learned</h2><div class="taste">' + (ws.length ? ws.map(([k, n]) => '<span class="chip ' + (n > 0 ? "up" : "down") + '">' + esc(k.slice(k.indexOf(":") + 1)) + " " + (n > 0 ? "+" : "") + Math.round(n) + "</span>").join("") : '<span class="empty" style="width:100%">Pick and skip a few videos and your preferences show up here.</span>') + "</div></section>";
-  if (live && S.day.poolAt && !busy) h += (S.chChanged ? '<p class="note">Your channel list changed. Refresh to include new uploads.</p>' : "") + '<button class="small' + (S.chChanged ? " primary" : "") + '" data-act="load" type="button" style="align-self:flex-start">Refresh candidates</button>';
+  if (live && S.day.poolAt && !busy) {
+    if (S.day.short.length < shortMax()) h += (S.chChanged ? '<p class="note">Your channel list changed. Refresh to include new uploads.</p>' : "") + '<button class="small' + (S.chChanged ? " primary" : "") + '" data-act="load" type="button" style="align-self:flex-start">Refresh candidates</button>';
+    else if (S.chChanged) h += '<p class="note">Today\'s list of ' + shortMax() + ' is set. New channels start showing up tomorrow.</p>';
+  }
   $("view").innerHTML = h;
 }
 function rowHtml(v) {
@@ -537,10 +576,12 @@ function renderSettings() {
     '<label class="f">Switch hour (0–23)<input type="number" inputmode="numeric" id="hr" min="0" max="23" value="' + c.hour + '"></label>' +
     '<label class="f">Minutes before the switch<input type="number" inputmode="numeric" id="am" min="0" max="600" value="' + c.amMin + '"></label>' +
     '<label class="f">Extra minutes after<input type="number" inputmode="numeric" id="pm" min="0" max="600" value="' + c.pmMin + '"></label>' +
-    '<label class="f" style="grid-column:1/-1">Show uploads from the last (days)<input type="number" inputmode="numeric" id="dy" min="1" max="30" value="' + c.days + '"></label></div>' +
+    '<label class="f" style="grid-column:1/-1">Show uploads from the last (days)<input type="number" inputmode="numeric" id="dy" min="1" max="30" value="' + c.days + '"></label>' +
+    '<label class="f" style="grid-column:1/-1">Videos in my daily list<input type="number" inputmode="numeric" id="sl" min="1" max="100" value="' + c.shortlist + '"></label></div>' +
     '<button class="primary" data-act="savecfg" type="button">Save limits</button></div>' +
-    '<div class="panel"><h2 class="sec" style="margin:0">Today</h2><button data-act="resetday" type="button">Start today over</button><button data-act="resettaste" type="button">Forget what it learned</button></div>' +
-    '<p class="note">Likes and skips shape the ranking here. YouTube does not let apps send "not interested", so your real recommendations are not affected.</p>';
+    '<div class="panel"><h2 class="sec" style="margin:0">History</h2><p class="note" style="margin:0">' + Object.keys(S.hist).length + ' videos saved on this device, with title and channel. Videos you picked or played never come back.</p><button data-act="exporthist" type="button">Download history (CSV)</button></div>' +
+    '<div class="panel"><h2 class="sec" style="margin:0">Today</h2><button data-act="resetday" type="button">Start today over</button></div>' +
+    '<p class="note">Each day you get a shortlist of up to ' + shortMax() + ' videos, newest first, spread across your channels. Skipped videos stay out until you bring them back.</p>';
 }
 function render() { rollDay(); ({ today: renderToday, search: renderSearch, settings: renderSettings, channels: renderChannels })[tab](); document.querySelectorAll("#nav button").forEach(b => { if (b.dataset.tab === tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); }); }
 function setTab(t) { tab = t; render(); window.scrollTo(0, 0); if (t === "channels") ensureSubs(); }
@@ -553,7 +594,7 @@ document.addEventListener("click", async e => {
   if (act === "keep") { const v = findVideo(id); if (v) keep(v); if (tab === "search") renderSearchResults(); }
   else if (act === "skip") { const v = findVideo(id); if (v) skip(v); }
   else if (act === "unkeep") unkeep(id);
-  else if (act === "play") openPlayer(id);
+  else if (act === "play") { markPlayed(id); openPlayer(id); }
   else if (act === "close") closePlayer();
   else if (act === "like") { try { await api("videos/rate", { id, rating: "like" }, { method: "POST" }); toast("Liked on YouTube."); } catch (er) { toast(er.message); } }
   else if (act === "load") loadPool();
@@ -561,6 +602,7 @@ document.addEventListener("click", async e => {
   else if (act === "goto-channels") setTab("channels");
   else if (act === "older") { S.day.windowDays = nextWin(); save(); if (S.mode === "live") loadPool(); else render(); }
   else if (act === "unskip") unskip(id);
+  else if (act === "exporthist") exportHist();
   else if (act === "toggleskipped") { showSkipped = !showSkipped; render(); }
   else if (act === "searchmore") searchGroup(searchState.q, searchState.groups.length);
   else if (act === "toastact") { const f = toastFn; toastFn = null; $("toast").hidden = true; if (f) f(); }
@@ -574,10 +616,9 @@ document.addEventListener("click", async e => {
   } else if (act === "disconnect") { S.mode = "demo"; S.token = null; S.tokenExp = 0; save(); render(); }
   else if (act === "savecfg") {
     const n = (id, lo, hi, d) => { const x = parseInt($(id).value, 10); return isNaN(x) ? d : Math.min(hi, Math.max(lo, x)); };
-    S.cfg.clientId = $("cid").value.trim(); S.cfg.maxVideos = n("mv", 0, 20, 5); S.cfg.hour = n("hr", 0, 23, 12); S.cfg.amMin = n("am", 0, 600, 15); S.cfg.pmMin = n("pm", 0, 600, 45); S.cfg.days = n("dy", 1, 30, 7); S.day.windowDays = 0;
+    S.cfg.clientId = $("cid").value.trim(); S.cfg.maxVideos = n("mv", 0, 20, 5); S.cfg.hour = n("hr", 0, 23, 12); S.cfg.amMin = n("am", 0, 600, 15); S.cfg.pmMin = n("pm", 0, 600, 45); S.cfg.days = n("dy", 1, 30, 7); S.day.windowDays = 0; S.cfg.shortlist = n("sl", 1, 100, 20); trimShort();
     save(); toast("Saved."); render();
-  } else if (act === "resetday") { S.day.kept.forEach(v => { delete S.seen[v.id]; }); S.day.kept = []; save(); toast("Today reset."); render(); }
-  else if (act === "resettaste") { S.w = {}; save(); toast("Preferences cleared."); render(); }
+  } else if (act === "resetday") { S.day.kept.forEach(v => { delete S.hist[v.id]; }); S.day.kept = []; save(); toast("Today reset."); render(); }
 });
 document.addEventListener("input", e => {
   if (e.target.id !== "cq") return;
