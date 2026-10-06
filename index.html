@@ -153,7 +153,7 @@ const defaultFilters = () => ({
   ai: { inc: "", exc: "", where: "kw" }, news: { inc: "", exc: "", where: "kw" },
   football: { inc: "samenvatting, hoogtepunten, highlights", exc: "motogp, formule 1, f1, grand prix, gp van, tennis, darts, wielren, golf, interview, gp, moto2", where: "kw" }
 });
-const PRESETS = [{ g: "news", q: "NOS op 3" }, { g: "news", q: "Nieuwsuur" }, { g: "news", q: "VPRO Tegenlicht" }, { g: "football", q: "Ziggo Sport" }, { g: "news", q: "LUBACH" }, { g: "news", q: "Big A" }, { g: "news", q: "AI Explained" }, { g: "news", q: "Prompt Engineering" }, { g: "news", q: "Fireship" }, { g: "news", q: "Caleb Writes Code" }, { g: "news", q: "AI Search" }];
+const PRESETS = [{ g: "news", q: "NOS op 3" }, { g: "news", q: "Nieuwsuur" }, { g: "news", q: "VPRO Tegenlicht" }, { g: "football", q: "Ziggo Sport" }, { g: "news", q: "LUBACH" }, { g: "news", q: "Big A" }, { g: "ai", q: "AI Explained" }, { g: "ai", q: "Prompt Engineering" }, { g: "ai", q: "Fireship" }, { g: "ai", q: "Caleb Writes Code" }, { g: "ai", q: "AI Search" }];
 /* ---------- storage ---------- */
 const KEY = "five-a-day-app-v2";
 const todayStr = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
