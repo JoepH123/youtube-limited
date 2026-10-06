@@ -109,13 +109,6 @@ nav button[aria-current="page"] svg { stroke-width: 2.4; }
 .catchip.on { background: var(--ink); color: #0f0f0f; }
 .catchip.on:hover { background: var(--ink); }
 .catchip span { opacity: .7; margin-left: 4px; font-variant-numeric: tabular-nums; }
-select { font: inherit; padding: 10px 16px; border-radius: 999px; border: 1px solid var(--line); background: #121212; color: var(--ink); }
-.row2 { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; background: var(--surface); border-radius: 12px; padding: 10px 12px; }
-.row2 .t { font-weight: 500; font-size: 14px; overflow-wrap: anywhere; }
-.row2 .c { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-.pill { font-size: 11px; font-weight: 500; padding: 1px 8px; border-radius: 999px; background: var(--raised); }
-.pill.ok { color: var(--good); }
-.pill.no { color: var(--warn); }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -137,8 +130,8 @@ const GROUPS = [{ id: "ai", name: "AI news" }, { id: "news", name: "News" }, { i
 const gname = id => (GROUPS.find(g => g.id === id) || {}).name || "";
 const emptyShort = () => ({ ai: [], news: [], football: [] });
 const defaultFilters = () => ({
-  ai: { inc: "", exc: "", where: "kw" }, news: { inc: "", exc: "", where: "kw" },
-  football: { inc: "samenvatting, hoogtepunten, highlights", exc: "motogp, formule 1, f1, grand prix, gp van, tennis, darts, wielren, golf", where: "kw" }
+  ai: { inc: "", exc: "" }, news: { inc: "", exc: "" },
+  football: { inc: "samenvatting, hoogtepunten, highlights", exc: "motogp, formule 1, f1, grand prix, gp van, tennis, darts, wielren, golf" }
 });
 const PRESETS = [{ g: "news", q: "NOS op 3" }, { g: "news", q: "Nieuwsuur" }, { g: "news", q: "VPRO Tegenlicht" }, { g: "football", q: "Ziggo Sport" }, { g: "news", q: "LUBACH" }, { g: "news", q: "Big A" }, { g: "news", q: "AI Explained" }, { g: "news", q: "Prompt Engineering" }, { g: "news", q: "Fireship" }, { g: "news", q: "Caleb Writes Code" }, { g: "news", q: "AI Search" }];
 /* ---------- storage ---------- */
@@ -167,8 +160,6 @@ const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch
   S.channels.forEach(c => { if (!c.g) c.g = "ai"; });
   S.filters = S.filters || {}; GROUPS.forEach(g => { if (!S.filters[g.id]) S.filters[g.id] = defaultFilters()[g.id]; });
   if (!GROUPS.some(g => g.id === S.cat)) S.cat = "ai";
-  if (S.day.pool.some(v => v.kw === undefined)) { S.day.pool = []; S.day.poolAt = 0; }
-  GROUPS.forEach(g => { S.day.short[g.id] = S.day.short[g.id].filter(v => S.hist[v.id] || v.kw !== undefined); });
   if (!S.presetsDone) { PRESETS.forEach(pr => S.channels.push({ id: "pending:" + pr.g + ":" + pr.q, title: pr.q, thumb: "", g: pr.g, pending: true, q: pr.q })); S.presetsDone = true; }
 })();
 const $ = id => document.getElementById(id);
@@ -201,11 +192,6 @@ const DEMO = [
   ["football", "Samenvatting | NEC - Sparta", "Tribune Sport", 7, "Sports", 140]
 ].map((v, i) => ({ id: "demo" + i, grp: v[0], title: v[1], channel: v[2], cat: v[4], secs: v[3] * 60, hue: v[5], demo: true, channelId: "demo:" + v[2], at: Date.now() - (((i * 5) % 9) * 24 + (i * 7) % 20 + 1) * 3600000 }));
 
-DEMO.forEach(v => {
-  v.kw = v.grp === "ai" ? "ai, nieuws" : v.grp === "news" ? "nieuws, actualiteit"
-    : /^SAMENVATTING GP/.test(v.title) ? "motogp, samenvatting, racen" : /^Samenvatting/.test(v.title) ? "voetbal, eredivisie, samenvatting, wedstrijd"
-    : /^Hoogtepunten/.test(v.title) ? "voetbal, eredivisie, hoogtepunten, wedstrijd" : /^Interview/.test(v.title) ? "voetbal, interview" : "voetbal, training";
-});
 /* ---------- time budget ---------- */
 function allowanceMin() { const h = new Date().getHours() + new Date().getMinutes() / 60; return S.cfg.amMin + (h >= S.cfg.hour ? S.cfg.pmMin : 0); }
 const usedSecs = () => S.day.kept.reduce((s, v) => s + v.secs, 0);
@@ -224,8 +210,7 @@ const chansOf = g => myChannels().filter(c => c.g === g);
 const chanSet = g => new Set(chansOf(g).filter(c => !c.pending).map(c => c.id));
 const wordList = x => String(x || "").split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
 function groupOk(v, g) {
-  const f = S.filters[g] || {}, inc = wordList(f.inc), exc = wordList(f.exc), where = f.where || "kw";
-  const kw = String(v.kw || ""), t = where === "title" ? String(v.title).toLowerCase() : where === "both" ? String(v.title).toLowerCase() + " | " + kw : kw;
+  const t = String(v.title).toLowerCase(), f = S.filters[g] || {}, inc = wordList(f.inc), exc = wordList(f.exc);
   if (inc.length && !inc.some(w => t.includes(w))) return false;
   return !exc.some(w => t.includes(w));
 }
@@ -319,7 +304,7 @@ async function hydrate(ids) {
   for (let i = 0; i < ids.length; i += 50) {
     const j = await api("videos", { part: "snippet,contentDetails", id: ids.slice(i, i + 50).join(","), maxResults: 50 });
     (j.items || []).forEach(it => out.push({
-      id: it.id, title: it.snippet.title, channel: it.snippet.channelTitle, channelId: it.snippet.channelId, at: Date.parse(it.snippet.publishedAt) || 0, kw: (it.snippet.tags || []).join(", ").toLowerCase().slice(0, 600), cat: CATS[it.snippet.categoryId] || "",
+      id: it.id, title: it.snippet.title, channel: it.snippet.channelTitle, channelId: it.snippet.channelId, at: Date.parse(it.snippet.publishedAt) || 0, cat: CATS[it.snippet.categoryId] || "",
       secs: isoSecs(it.contentDetails.duration), live: it.snippet.liveBroadcastContent !== "none"
     }));
   }
@@ -523,13 +508,6 @@ async function loadSubs() {
   } catch (e) { toast(e.message); }
 }
 async function ensureSubs() { if (S.mode === "live" && tokenValid() && (!S.subs.length || Date.now() - S.subsAt > 86400000)) await loadSubs(); }
-function updateFilterPreview() {
-  const el = $("fprev"); if (!el) return;
-  const set = chanSet(S.cat);
-  let pool = S.mode === "live" ? S.day.pool.filter(v => set.has(v.channelId)) : DEMO.filter(v => v.grp === S.cat && (!set.size || set.has(v.channelId)));
-  pool = pool.slice().sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 10);
-  el.innerHTML = pool.length ? pool.map(v => { const ok = groupOk(v, S.cat); return '<li class="row2"><div class="t">' + esc(v.title) + '</div><div class="c">' + (v.kw ? esc(v.kw.slice(0, 140)) : "No keywords set") + '</div><span class="pill ' + (ok ? "ok" : "no") + '">' + (ok ? "Shown" : "Hidden") + "</span></li>"; }).join("") : '<li class="empty">Load videos on the Today tab to see recent videos and their keywords here.</li>';
-}
 function renderChannels() {
   const live = S.mode === "live", f = S.filters[S.cat] || { inc: "", exc: "" };
   $("view").innerHTML = '<div class="top"><h1>Channels</h1><span class="date" id="chcount"></span></div>' +
@@ -538,13 +516,11 @@ function renderChannels() {
     '<input type="search" id="cq" placeholder="Type a channel name" autocomplete="off" autocapitalize="off" spellcheck="false" value="' + esc(chQuery) + '">' +
     (live ? '<button class="small" data-act="browse" type="button" style="align-self:flex-start">' + (showSubs ? "Hide my subscriptions" : "Browse my YouTube subscriptions") + "</button>" : '<p class="note" style="margin:0">These are demo channels. Connect YouTube in Settings to add real ones.</p>') +
     '<div id="sugg"></div><section><h2 class="sec">Your channels</h2><ul class="list" id="chlist"></ul></section>' +
-    '<div class="panel"><h2 class="sec" style="margin:0">Filter for ' + esc(gname(S.cat)) + '</h2>' +
-    '<label class="f">Look for these words in<select id="fwhere">' + [["kw", "Video keywords"], ["title", "Title"], ["both", "Keywords and title"]].map(o => '<option value="' + o[0] + '"' + ((f.where || "kw") === o[0] ? " selected" : "") + ">" + o[1] + "</option>").join("") + "</select></label>" +
-    '<label class="f">Only videos with one of these words<input type="text" id="finc" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="All videos" value="' + esc(f.inc) + '"></label>' +
+    '<div class="panel"><h2 class="sec" style="margin:0">Title filter for ' + esc(gname(S.cat)) + '</h2>' +
+    '<label class="f">Only videos with one of these words in the title<input type="text" id="finc" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="All videos" value="' + esc(f.inc) + '"></label>' +
     '<label class="f">Never show videos with these words<input type="text" id="fexc" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="None" value="' + esc(f.exc) + '"></label>' +
-    '<p class="note" style="margin:0">Separate words with commas. Capital letters do not matter. Keywords are the tags the uploader set on each video.</p></div>' +
-    '<section><h2 class="sec">Recent videos and their keywords</h2><ul class="list" id="fprev"></ul></section>';
-  updateChannelList(); updateSugg(); updateFilterPreview();
+    '<p class="note" style="margin:0">Separate words with commas. Capital letters do not matter.</p></div>';
+  updateChannelList(); updateSugg();
 }
 
 /* ---------- player sheet ---------- */
@@ -714,11 +690,11 @@ document.addEventListener("click", async e => {
   } else if (act === "resetday") { S.day.kept.forEach(v => { delete S.hist[v.id]; }); S.day.kept = []; save(); toast("Today reset."); render(); }
 });
 document.addEventListener("input", e => {
-  if (e.target.id === "finc" || e.target.id === "fexc" || e.target.id === "fwhere") {
+  if (e.target.id === "finc" || e.target.id === "fexc") {
     const f = S.filters[S.cat] = S.filters[S.cat] || { inc: "", exc: "" };
-    if (e.target.id === "fwhere") f.where = e.target.value; else f[e.target.id === "finc" ? "inc" : "exc"] = e.target.value;
+    f[e.target.id === "finc" ? "inc" : "exc"] = e.target.value;
     S.day.short[S.cat] = S.day.short[S.cat].filter(v => S.hist[v.id] || groupOk(v, S.cat));
-    buildShort(S.cat); save(); updateFilterPreview(); return;
+    buildShort(S.cat); save(); return;
   }
   if (e.target.id !== "cq") return;
   chQuery = e.target.value; clearTimeout(remoteTimer); updateSugg();
