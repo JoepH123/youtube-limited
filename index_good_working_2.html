@@ -291,15 +291,9 @@ function signIn(interactive) {
     tokenClient.requestAccessToken({ prompt: interactive ? "select_account" : "" });
   });
 }
-/* Counts the YouTube quota this app spends. Search costs 100 units, a rating 50, everything else 1. The day resets at midnight Pacific Time. */
-const UKEY = "five-a-day-units", QUOTA = 10000;
-const ptDay = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-function unitsToday() { try { const u = JSON.parse(localStorage.getItem(UKEY) || "{}"); return u.d === ptDay() ? (u.n || 0) : 0; } catch (e) { return 0; } }
-function addUnits(n) { try { localStorage.setItem(UKEY, JSON.stringify({ d: ptDay(), n: unitsToday() + n })); } catch (e) {} }
 async function api(path, params, opts) {
   opts = opts || {};
   if (!tokenValid()) await signIn(false);
-  addUnits(path === "search" ? 100 : path === "videos/rate" ? 50 : 1);
   const url = "https://www.googleapis.com/youtube/v3/" + path + "?" + new URLSearchParams(params).toString();
   const r = await fetch(url, { method: opts.method || "GET", headers: { Authorization: "Bearer " + S.token } });
   if (r.status === 204) return {};
@@ -333,9 +327,8 @@ async function dropShorts(vids) {
   return vids.filter(v => v.secs > 60 && !shorts.has(v.id));
 }
 async function uploadsOf(ch) {
-  const all = () => api("playlistItems", { part: "contentDetails", playlistId: "UU" + ch.slice(2), maxResults: 50 });
-  try { const j = await api("playlistItems", { part: "contentDetails", playlistId: "UULF" + ch.slice(2), maxResults: 50 }); return (j.items || []).length ? j : all(); }
-  catch (e) { if (e.status === 404) return all(); throw e; }
+  try { return await api("playlistItems", { part: "contentDetails", playlistId: "UULF" + ch.slice(2), maxResults: 50 }); }
+  catch (e) { if (e.status === 404) return api("playlistItems", { part: "contentDetails", playlistId: "UU" + ch.slice(2), maxResults: 50 }); throw e; }
 }
 const REFRESH_SVG = '<svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/></svg>';
 function setSpin(on) { document.querySelectorAll("#rbtn").forEach(b => b.classList.toggle("spin", on)); }
@@ -504,14 +497,7 @@ async function remoteSearch(q) {
   } catch (e) { if (chQuery.trim() !== q) return; remote = { q, res: null, err: e.reason === "quotaExceeded" ? "Today's YouTube search quota is used up. Pick from your subscriptions instead." : e.message }; }
   updateSugg();
 }
-function chanStat(c) {
-  if (S.mode !== "live" || c.pending) return "";
-  if (!S.day.poolAt || (c.added && c.added > S.day.poolAt)) return "Not loaded yet. Refresh on the Today tab.";
-  const all = S.day.pool.filter(v => v.channelId === c.id).length, shown = candidates(c.g).filter(v => v.channelId === c.id).length;
-  if (!all) return "No videos in the last " + winDays() + " days";
-  return all + " video" + (all === 1 ? "" : "s") + " loaded" + (shown < all ? ", " + shown + " shown (rest watched or filtered)" : "");
-}
-function chanSub(c) { if (c.pending) return c.failed ? "Not found. Remove it and search again." : "Matching on YouTube…"; return [c.from ? 'Matched from "' + c.from + '"' : "", chanStat(c)].filter(Boolean).join(" · "); }
+function chanSub(c) { if (c.pending) return c.failed ? "Not found. Remove it and search again." : "Matching on YouTube…"; return c.from ? 'Matched from "' + c.from + '"' : ""; }
 function updateChannelList() {
   const cs = chansOf(S.cat);
   const l = $("chlist"); if (l) l.innerHTML = cs.length ? cs.map(c => '<li class="chrow">' + avatar(c) + '<div class="nm">' + esc(c.title) + (chanSub(c) ? '<span class="sub">' + esc(chanSub(c)) + "</span>" : "") + '</div><button class="small" data-act="rmch" data-id="' + esc(c.id) + '" type="button">Remove</button></li>').join("") : '<li class="empty">No channels yet. Search above to add one.</li>';
@@ -521,7 +507,7 @@ function addChannel(id) {
   const c = chLookup[id]; if (!c) return;
   if (chansOf(S.cat).length >= MAXCH) return toast("You can follow up to " + MAXCH + " channels per category.");
   if (S.channels.some(x => x.id === id && x.g === S.cat)) return;
-  S.channels.push({ id: c.id, title: c.title, thumb: c.thumb || "", g: S.cat, added: Date.now() }); S.chChanged = true; save();
+  S.channels.push({ id: c.id, title: c.title, thumb: c.thumb || "", g: S.cat }); S.chChanged = true; save();
   chQuery = ""; remote = { q: "", res: null, err: "" }; const i = $("cq"); if (i) i.value = "";
   updateChannelList(); updateSugg(); toast("Added " + c.title + " to " + gname(S.cat) + ".");
 }
@@ -730,7 +716,6 @@ function renderSettings() {
     '<label class="f">Extra minutes after<input type="number" inputmode="numeric" id="pm" min="0" max="600" value="' + c.pmMin + '"></label>' +
     '<label class="f" style="grid-column:1/-1">Show uploads from the last (days)<input type="number" inputmode="numeric" id="dy" min="1" max="30" value="' + c.days + '"></label></div>' +
     '<button class="primary" data-act="savecfg" type="button">Save limits</button></div>' +
-    (() => { const u = unitsToday(), pct = Math.min(100, u / QUOTA * 100); return '<div class="panel"><h2 class="sec" style="margin:0">YouTube usage today</h2><div class="bar"><i style="width:' + pct + '%"></i></div><div class="meta"><span><b>' + u.toLocaleString() + "</b> of " + QUOTA.toLocaleString() + ' units</span><span>' + Math.round(pct) + '%</span></div><p class="note" style="margin:0">Counted by this app on this device, so it is an estimate. Searching for a channel costs 100 units, everything else about 1. The count resets at midnight Pacific Time.</p></div>'; })() +
     '<div class="panel"><h2 class="sec" style="margin:0">Today</h2><button data-act="resetday" type="button">Start today over</button></div>' +
     '<p class="note">Today lists every video from your channels in the last ' + c.days + ' days, newest first. "Watched" counts toward your limits. "Seen before" hides a video without counting. Both are saved on this device in History and never come back.</p>';
 }
