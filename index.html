@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-title" content="Five a Day">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="theme-color" content="#0f0f0f">
+<meta name="app-build" content="20261010-1440">
 <title>Five a Day</title>
 <link rel="apple-touch-icon" sizes="180x180" href="app-icon-180.png">
 <link rel="icon" type="image/png" href="app-icon-180.png">
@@ -425,10 +426,10 @@ function undo(id) { S.day.kept = S.day.kept.filter(k => k.id !== id); delete S.h
 const findVideo = id => S.day.kept.find(v => v.id === id) || (S.day.pool || []).find(v => v.id === id) || ((searchState.groups || []).flatMap(g => g.vids).find(v => v.id === id)) || DEMO.find(v => v.id === id)
   || (S.hist[id] ? { id, title: S.hist[id].t || "Video", channel: S.hist[id].c || "YouTube", secs: S.hist[id].d || 0, at: 0, demo: id.startsWith("demo") } : null);
 let toastTimer, toastFn = null;
-function toast(msg, label, fn) {
+function toast(msg, label, fn, sticky) {
   const t = $("toast"); toastFn = fn || null;
   t.innerHTML = "<span>" + esc(msg) + "</span>" + (label ? '<button type="button" data-act="toastact">' + esc(label) + "</button>" : "");
-  t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, label ? 7000 : 3800);
+  t.hidden = false; clearTimeout(toastTimer); if (!sticky) toastTimer = setTimeout(() => { t.hidden = true; }, label ? 7000 : 3800);
 }
 
 /* ---------- channels ---------- */
@@ -731,6 +732,7 @@ function renderSettings() {
     '<label class="f" style="grid-column:1/-1">Show uploads from the last (days)<input type="number" inputmode="numeric" id="dy" min="1" max="30" value="' + c.days + '"></label></div>' +
     '<button class="primary" data-act="savecfg" type="button">Save limits</button></div>' +
     (() => { const u = unitsToday(), pct = Math.min(100, u / QUOTA * 100); return '<div class="panel"><h2 class="sec" style="margin:0">YouTube usage today</h2><div class="bar"><i style="width:' + pct + '%"></i></div><div class="meta"><span><b>' + u.toLocaleString() + "</b> of " + QUOTA.toLocaleString() + ' units</span><span>' + Math.round(pct) + '%</span></div><p class="note" style="margin:0">Counted by this app on this device, so it is an estimate. Searching for a channel costs 100 units, everything else about 1. The count resets at midnight Pacific Time.</p></div>'; })() +
+    '<div class="panel"><h2 class="sec" style="margin:0">App version</h2><p class="note" style="margin:0">Build ' + esc(BUILD) + '. The app checks for updates when you open it. If something looks outdated, reload it here.</p><button data-act="reloadapp" type="button">Reload app</button></div>' +
     '<div class="panel"><h2 class="sec" style="margin:0">Today</h2><button data-act="resetday" type="button">Start today over</button></div>' +
     '<p class="note">Today lists every video from your channels in the last ' + c.days + ' days, newest first. "Watched" counts toward your limits. "Seen before" hides a video without counting. Both are saved on this device in History and never come back.</p>';
 }
@@ -751,6 +753,7 @@ document.addEventListener("click", async e => {
   else if (act === "close") closePlayer();
   else if (act === "like") { try { await api("videos/rate", { id, rating: "like" }, { method: "POST" }); toast("Liked on YouTube."); } catch (er) { toast(er.message); } }
   else if (act === "load") refreshNow();
+  else if (act === "reloadapp") location.reload();
   else if (act === "goto-settings") setTab("settings");
   else if (act === "goto-channels") setTab("channels");
   else if (act === "older") { S.day.windowDays = nextWin(); save(); if (S.mode === "live") loadPool(); else render(); }
@@ -786,6 +789,22 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("keydown", e => { if ((e.key === "Enter" || e.key === " ") && e.target.classList && e.target.classList.contains("tap")) { e.preventDefault(); e.target.click(); } });
 document.addEventListener("submit", e => { if (e.target.id === "sform") { e.preventDefault(); const q = $("sq").value.trim(); if (q) runSearch(q); } });
+
+/* ---------- keep the installed app up to date ---------- */
+const BUILD = (document.querySelector('meta[name="app-build"]') || {}).content || "";
+let updateAsked = false, lastCheck = 0;
+async function checkUpdate(force) {
+  if (!BUILD || updateAsked || navigator.onLine === false) return;
+  if (!force && Date.now() - lastCheck < 60000) return;
+  lastCheck = Date.now();
+  try {
+    const r = await fetch(location.pathname + "?_=" + Date.now(), { cache: "no-store" }); if (!r.ok) return;
+    const m = /<meta name="app-build" content="([^"]+)"/.exec(await r.text());
+    if (m && m[1] !== BUILD) { updateAsked = true; toast("A new version is ready.", "Update", () => location.reload(), true); }
+  } catch (e) {}
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkUpdate(); });
+checkUpdate(true);
 
 /* ---------- pull to refresh ---------- */
 (function pullToRefresh() {
